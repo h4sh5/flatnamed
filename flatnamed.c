@@ -166,6 +166,9 @@ void process_query(unsigned char *pkt, size_t plen, struct sockaddr* sa, socklen
 		fprintf(stderr, "type A query\n");
 	}
 #endif
+	// question needs to be included in answer
+	unsigned char *question = pkt+sizeof(qh); // the query data past the query header is the question
+	size_t qlen = plen - sizeof(qh);
 
 	/***************** RESPONSE **********************/
 	// XXX give dummy response 
@@ -187,6 +190,7 @@ void process_query(unsigned char *pkt, size_t plen, struct sockaddr* sa, socklen
 
 	unsigned char data[4] = {0x7f, 0x00, 0x00, 0x01}; // 127.0.0.1 + NULL NULL
 
+	// HANDLE A RECORD
 	if (type == type_A) {
 		rrh.dlen = htons(4); // an ipv4 address is 4 bytes long
 		// do a lookup
@@ -202,16 +206,30 @@ void process_query(unsigned char *pkt, size_t plen, struct sockaddr* sa, socklen
 		if (r) {
 			fprintf(stderr, "found value:%s\n", r->value);
 		}
-	} else {
+	} else { // refuse - record not supported
 		rrh.dlen = 0;
+		size_t qlen = plen - sizeof(qh); // packet length - the header size = size of question
+
+		unsigned char rpkt[sizeof(qh) + qlen];
+		// set answer header to the same as qh, then modify it
+		memcpy(&ah, &qh, sizeof(qh));
+		// set qh flag to refuse (reply code 5)
+		ah.flags = htons(0x8005); // REFUSE response 
+		memcpy(rpkt, 										(unsigned char*) &ah, sizeof(qh)); // copy in answer header
+		memcpy(rpkt + sizeof(ah), 							question, qlen); // copy in question
+#ifdef DEBUG
+		fprintf(stderr, "sending REFUSE\n");
+#endif
+		if (sendto(socket, rpkt, sizeof(rpkt), 0, sa, sa_len) == -1) {
+			warnx("sendto error: %s", strerror(errno));
+		}
+		return;
 	}
 
 	// actual answer data
 	
 
-	// question needs to be included in answer
-	unsigned char *question = pkt+sizeof(qh); // the query data past the query header is the question
-	size_t qlen = plen - sizeof(qh);
+	
 
 	unsigned char rpkt[sizeof(ah) + qlen + sizeof(rrh) + sizeof(data)];
 	memcpy(rpkt, 										(unsigned char*) &ah, sizeof(ah)); // copy in answer header

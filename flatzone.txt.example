@@ -1,0 +1,6 @@
+# names must end with a .
+example.com. IN A 1.2.3.4
+localhost. IN A 127.0.0.1
+cloudflare. IN A 1.1.1.1
+super.1.2.3.4.hero. IN A 2.3.4.5
+super. IN TXT "hello world"

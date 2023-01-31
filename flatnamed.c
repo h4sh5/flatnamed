@@ -12,8 +12,10 @@
 #include <unistd.h>
 #include <stdarg.h>
 
-// 512 is usually enough; but what the hell why not 64k? or more?
-#define QMAX 64000
+#include "qtypes.h"
+
+// 512 is usually enough; but why not more?
+#define QMAX 1024
 
 //packed, to make sure the size is consistent and no extra padding is applied
 typedef struct {
@@ -23,14 +25,16 @@ typedef struct {
 	uint16_t answer_rrs; // Resource Records in answer
 	uint16_t authority_rrs;
 	uint16_t additional_rrs;
-} __attribute__((packed)) DNSQueryHeader;
+} __attribute__((packed)) DNSHeader; // Query headers and Response headers are the same! Difference only in the flag. (first bit 0 = qry, 1 = response)
 
-// size of query string isn't static, obviously
-typedef struct  {
-	char* name; // e.g. example.com
+typedef struct {
+	uint16_t name_ptr; // pointer to the queried name (compression thingo)
 	uint16_t type;
 	uint16_t class;
-} DNSQuery;
+	uint32_t ttl; // Resource Records in answer
+	uint16_t dlen; // data length
+} __attribute__((packed)) RRHeader; // Query headers and Response headers are the same! Difference only in the flag. (first bit 0 = qry, 1 = response)
+
 
 
 void hexdump(const void *d, size_t datalen) {
@@ -66,13 +70,104 @@ void msginfo(const struct sockaddr_storage *ss, socklen_t sslen, size_t len) {
     fprintf(stderr, "host %s port %s bytes %zu\n", hbuf, sbuf, len);
 }
 
-// parse and dump query info
-void queryinfo(unsigned char *pkt, size_t plen) {
-	DNSQueryHeader qh = {0,};
-	DNSQuery q = {0,};
+// parse and answer query
+void process_query(unsigned char *pkt, size_t plen, struct sockaddr* sa, socklen_t sa_len,  int socket) {
+	DNSHeader qh = {0,};
 	memcpy(&qh, pkt, sizeof(qh));
 	fprintf(stderr, "txid:%04x flags:%04x questions:%04x answer_rrs:%04x additional_rrs:%04x\n", qh.tid, qh.flags, qh.answer_rrs, qh.authority_rrs,qh.additional_rrs);
-	
+	// use a while loop to parse names
+	size_t name_max = QMAX - sizeof(DNSHeader); // it can only be so big anyway
+	// avoiding malloc so there are no heap bugs, so we just use a big stack var
+	unsigned char name[name_max]; // need to reserve one byte at the end for NULL
+	memset(name, 0, name_max);
+	size_t name_len = 0; // current len
+	size_t name_index = 0;
+	//process the length/string pairs until we get a NULL byte.  
+	// e.g. domain example.com is encoded as these 13 bytes: 7example3com0
+	// https://jvns.ca/blog/2022/09/12/why-do-domain-names-end-with-a-dot-/
+	while (1) {
+		size_t next_len = pkt[sizeof(qh) + name_index];
+		// the end
+		if (next_len == 0) {
+			break;
+		}
+		if (name_len >= name_max -1) { // let's be safe
+			name[name_len] = 0;
+#ifdef DEBUG
+			fprintf(stderr, "early exit since name too long. name:%s", name);
+#endif
+			break;
+		}
+		strncat(name, pkt + (sizeof(qh) + name_index + 1), next_len);
+		name_index += next_len;
+#ifdef DEBUG
+		fprintf(stderr, "name_index:%d name:%s\n", name_index, name);
+#endif
+		name[name_index] = '.'; // add dot; 
+		//this current implementation means that dots are always added to the end of queried names, which isn't necessarily a bad thing
+		name_index ++;
+#ifdef DEBUG
+		fprintf(stderr, "name_index:%d name:%s\n", name_index, name);
+#endif
+		name_len = name_index + 1;
+
+	}
+
+	uint16_t type = (uint16_t) pkt[sizeof(qh) + name_len + 1];
+	uint16_t class = (uint16_t) pkt[sizeof(qh) + name_len + 3];
+
+#ifdef DEBUG
+	fprintf(stderr, "name:%s type:%04x class:%04x\n", name, type, class);
+	if (type == type_A) {
+		fprintf(stderr, "type A query\n");
+	}
+#endif
+
+	/***************** RESPONSE **********************/
+	// XXX give dummy response 
+	DNSHeader ah = {0,};
+	RRHeader rrh = {0,};
+
+	ah.tid = qh.tid;
+	ah.flags = htons(1 << 15); //  0x8000 (right most bit set, for indicating response)
+	ah.num_questions = qh.num_questions;
+	ah.answer_rrs = htons(1); // 1 (need to call htons on all these fields to conver them to little endian)
+
+	// the weird compression scheme thing, where it points to the offset of the name, and starting with 0b11 (11 in binary)
+
+	// 00 11 is because of small endian
+	rrh.name_ptr = htons(0xc000 | sizeof(qh)); // happens to usually be at the end of the query header size (12 bytes)
+	rrh.type = htons(type); // the queried type
+	rrh.class = htons(class);
+	rrh.ttl = htonl(300); // 300 seconds left?
+	if (type == type_A) {
+		rrh.dlen = htons(4); // an ipv4 address is 4 bytes long
+	} else {
+		rrh.dlen = 0;
+	}
+
+	// actual answer data
+	unsigned char data[] = {0x7f, 0x00, 0x00, 0x01}; // 127.0.0.1 + NULL NULL
+
+	// question needs to be included in answer
+	unsigned char *question = pkt+sizeof(qh); // the query data past the query header is the question
+	size_t qlen = plen - sizeof(qh);
+
+	unsigned char rpkt[sizeof(ah) + qlen + sizeof(rrh) + sizeof(data)];
+	memcpy(rpkt, 										(unsigned char*) &ah, sizeof(ah)); // copy in answer header
+	memcpy(rpkt + sizeof(ah), 							question, qlen); // copy in question
+	memcpy(rpkt + sizeof(ah) + qlen,				 	(unsigned char*) &rrh, sizeof(rrh)); // copy in resource record header
+	memcpy(rpkt + sizeof(ah) + qlen + sizeof(rrh),	 	data, sizeof(data)); // actual answer data
+#ifdef DEBUG
+	puts("------ answer ------");
+	// hexdump(rpkt, sizeof(rpkt));
+#endif
+	if (sendto(socket, rpkt, sizeof(rpkt), 0, sa, sa_len) == -1) {
+		warnx("sendto error: %s", strerror(errno));
+	}
+
+
+
 }
  
 int main(int argc, char **argv) {
@@ -81,9 +176,12 @@ int main(int argc, char **argv) {
 
 	// arg parsing
 	int ch;
-	while ((ch = getopt(argc, argv, "p:")) != -1) {
+	int debug_mode  = 0;
+	while ((ch = getopt(argc, argv, "p:D")) != -1) {
 		if (ch == 'p') {
 			port = atoi(optarg);
+		} else if (ch == 'D') {
+			debug_mode = 1;
 		}
 	}
 
@@ -112,6 +210,8 @@ int main(int argc, char **argv) {
 		return -1;
 	}
 
+	size_t count = 0;
+
 #ifdef DEBUG
 	fprintf(stderr, "started on port: %d\n", port);
 #endif
@@ -123,9 +223,19 @@ int main(int argc, char **argv) {
 		ssize_t rlen = recvfrom(s, buf, QMAX, 0, &from, &fromLen);
 #ifdef DEBUG
 		msginfo((struct sockaddr_storage *) &from, fromLen, rlen);
-		queryinfo(buf, rlen);
-		hexdump(buf, rlen);
+		// hexdump(buf, rlen);
 #endif
+		// if (!fork()) { //child?
+		process_query(buf, rlen, &from, fromLen, s);
+			// return 0;
+		// }
+		
+		count ++;
+		fprintf(stderr, "count:%d\n", count);
+		if (debug_mode && count == 100) {
+			fprintf(stderr, "finishing up in debug mode..\n");
+			return 0;
+		}
 	}
 
 

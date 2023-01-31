@@ -1,7 +1,10 @@
 all: debug
 
+CC=gcc
+
+#-pg for gprof
 debug: flatnamed.c
-	$(CC) -DDEBUG flatnamed.c -o flatnamed
+	$(CC)  -DDEBUG -pg  -std=gnu99  flatnamed.c -o flatnamed
 
 release: flatnamed.c
-	$(CC) flatnamed.c -o flatnamed
+	$(CC) -O3  -std=gnu99  flatnamed.c -o flatnamed

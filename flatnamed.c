@@ -184,14 +184,30 @@ void process_query(unsigned char *pkt, size_t plen, struct sockaddr* sa, socklen
 	rrh.type = htons(type); // the queried type
 	rrh.class = htons(class);
 	rrh.ttl = htonl(300); // 300 seconds left?
+
+	unsigned char data[4] = {0x7f, 0x00, 0x00, 0x01}; // 127.0.0.1 + NULL NULL
+
 	if (type == type_A) {
 		rrh.dlen = htons(4); // an ipv4 address is 4 bytes long
+		// do a lookup
+		struct name_hash_record *r;
+		char key[strlen(name) + 2 + 1];
+		sprintf(key, "%s-A", name);
+		key[sizeof(key) - 1] = 0; // NULL term
+#ifdef DEBUG
+		fprintf(stderr,"looking up key %s\n", key);
+#endif
+		uint32_t khash = jenkins_one_at_a_time_hash(key, sizeof(key));
+		HASH_FIND_INT(records, &khash,r);
+		if (r) {
+			fprintf(stderr, "found value:%s\n", r->value);
+		}
 	} else {
 		rrh.dlen = 0;
 	}
 
 	// actual answer data
-	unsigned char data[] = {0x7f, 0x00, 0x00, 0x01}; // 127.0.0.1 + NULL NULL
+	
 
 	// question needs to be included in answer
 	unsigned char *question = pkt+sizeof(qh); // the query data past the query header is the question
@@ -299,6 +315,12 @@ void parse_zone_file(char* filename) {
 	while (!feof(fp)) {
 		char line[RECORD_LINE_MAX] = {0,};
 		fgets(line, RECORD_LINE_MAX, fp);
+		if (line[0]=='#') { //skip comments
+			continue;
+		}
+		if (strlen(line) <= 1) {
+			break;
+		}
 		// get tokens (quoted = double quotes only)
 		char* name = get_nth_whitespace_quoted_token(line, strlen(line)-1, 1); // strlen - 1 to get rid of \n
 		char* class = get_nth_whitespace_quoted_token(line, strlen(line)-1, 2);

@@ -15,7 +15,7 @@
 #include "qtypes.h"
 
 // 512 is usually enough; but why not more?
-#define QMAX 1024
+#define QMAX 10240
 
 //packed, to make sure the size is consistent and no extra padding is applied
 typedef struct {
@@ -74,7 +74,9 @@ void msginfo(const struct sockaddr_storage *ss, socklen_t sslen, size_t len) {
 void process_query(unsigned char *pkt, size_t plen, struct sockaddr* sa, socklen_t sa_len,  int socket) {
 	DNSHeader qh = {0,};
 	memcpy(&qh, pkt, sizeof(qh));
+#ifdef DEBUG
 	fprintf(stderr, "txid:%04x flags:%04x questions:%04x answer_rrs:%04x additional_rrs:%04x\n", qh.tid, qh.flags, qh.answer_rrs, qh.authority_rrs,qh.additional_rrs);
+#endif
 	// use a while loop to parse names
 	size_t name_max = QMAX - sizeof(DNSHeader); // it can only be so big anyway
 	// avoiding malloc so there are no heap bugs, so we just use a big stack var
@@ -176,12 +178,16 @@ int main(int argc, char **argv) {
 
 	// arg parsing
 	int ch;
-	int debug_mode  = 0;
-	while ((ch = getopt(argc, argv, "p:D")) != -1) {
+	int debug_count  = 0;
+	while ((ch = getopt(argc, argv, "p:D:")) != -1) {
 		if (ch == 'p') {
 			port = atoi(optarg);
 		} else if (ch == 'D') {
-			debug_mode = 1;
+			debug_count = atoi(optarg);
+			fprintf(stderr, "debug_count: %d\n", debug_count);
+		} else if (ch == ':') {
+			// missing argument
+			return -1;
 		}
 	}
 
@@ -231,8 +237,10 @@ int main(int argc, char **argv) {
 		// }
 		
 		count ++;
+#ifdef DEBUG
 		fprintf(stderr, "count:%d\n", count);
-		if (debug_mode && count == 100) {
+#endif
+		if (debug_count != 0 && count == debug_count) {
 			fprintf(stderr, "finishing up in debug mode..\n");
 			return 0;
 		}

@@ -15,8 +15,22 @@
 // 512 is usually enough; but what the hell why not 64k? or more?
 #define QMAX 64000
 
+//packed, to make sure the size is consistent and no extra padding is applied
+typedef struct {
+	uint16_t tid; // tx id
+	uint16_t flags;
+	uint16_t num_questions;
+	uint16_t answer_rrs; // Resource Records in answer
+	uint16_t authority_rrs;
+	uint16_t additional_rrs;
+} __attribute__((packed)) DNSQueryHeader;
 
-
+// size of query string isn't static, obviously
+typedef struct  {
+	char* name; // e.g. example.com
+	uint16_t type;
+	uint16_t class;
+} DNSQuery;
 
 
 void hexdump(const void *d, size_t datalen) {
@@ -52,6 +66,15 @@ void msginfo(const struct sockaddr_storage *ss, socklen_t sslen, size_t len) {
     fprintf(stderr, "host %s port %s bytes %zu\n", hbuf, sbuf, len);
 }
 
+// parse and dump query info
+void queryinfo(unsigned char *pkt, size_t plen) {
+	DNSQueryHeader qh = {0,};
+	DNSQuery q = {0,};
+	memcpy(&qh, pkt, sizeof(qh));
+	fprintf(stderr, "txid:%04x flags:%04x questions:%04x answer_rrs:%04x additional_rrs:%04x\n", qh.tid, qh.flags, qh.answer_rrs, qh.authority_rrs,qh.additional_rrs);
+	
+}
+ 
 int main(int argc, char **argv) {
 	
 	int port = 53; // TODO take arg, argparse etc.
@@ -100,6 +123,7 @@ int main(int argc, char **argv) {
 		ssize_t rlen = recvfrom(s, buf, QMAX, 0, &from, &fromLen);
 #ifdef DEBUG
 		msginfo((struct sockaddr_storage *) &from, fromLen, rlen);
+		queryinfo(buf, rlen);
 		hexdump(buf, rlen);
 #endif
 	}

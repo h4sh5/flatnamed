@@ -212,18 +212,26 @@ void process_query(unsigned char *pkt, size_t plen, struct sockaddr* sa, socklen
 
 }
 
-// 1 indexed
+// 1 indexed, and double quotes only
+// TODO: add single quote?
 char* get_nth_whitespace_quoted_token(char *s, size_t slen, int nth) {
 	int n = 0;
-	// TODO handle quotes
-	int in_quote = 0; 
+	// TODO handle quotes (double quotes)
+	int in_quote = 0;  
 	int prev_whitespace = 0;
 
 	// scan past consecutive separators
 	size_t end, prev_end;
 	prev_end = 0;
 	for (end = 0; end < slen; ++end) {
-		if ((s[end] == ' ' || s[end] == '\t' || s[end] == '\r')) { //whitespace
+		if (s[end] == '"') {
+			if (!in_quote) { // start quote
+				in_quote = 1;
+			} else { // end quote
+				in_quote = 0;
+			}
+		}
+		if ((s[end] == ' ' || s[end] == '\t' || s[end] == '\r') && !in_quote) { //whitespace
 
 			if (!prev_whitespace) {
 				n++;
@@ -249,8 +257,21 @@ char* get_nth_whitespace_quoted_token(char *s, size_t slen, int nth) {
 // #endif
 	char *token = malloc(end-prev_end+1);
 
-	strncpy(token, s+prev_end, end-prev_end);
-	token[end-prev_end] = 0; // NULL term
+	// get rid of quotes if they exist
+	if (s[prev_end] == '"') {
+		strncpy(token, s+prev_end+1, end-prev_end);
+	} else {
+		strncpy(token, s+prev_end, end-prev_end);
+	}
+	
+	if (token[strlen(token)-2] == '"') {
+		token[strlen(token)-2] = 0;
+	}
+
+
+	token[end-prev_end-1] = 0; // NULL term, and get rid of new line
+
+
 	
 // #ifdef DEBUG
 // 	fprintf(stderr, "token in func:%s\n", token);
@@ -277,13 +298,14 @@ void parse_zone_file(char* filename) {
 	while (!feof(fp)) {
 		char line[RECORD_LINE_MAX] = {0,};
 		fgets(line, RECORD_LINE_MAX, fp);
-		// get tokens
+		// get tokens (quoted = double quotes only)
 		char* name = get_nth_whitespace_quoted_token(line, strlen(line), 1);
 		char* class = get_nth_whitespace_quoted_token(line, strlen(line), 2);
 		char* type = get_nth_whitespace_quoted_token(line, strlen(line), 3);
+		char* value = get_nth_whitespace_quoted_token(line, strlen(line), 4);
 #ifdef DEBUG
 
-		fprintf(stderr,"parsed name:%s class:%s type:%s\n", name,class,type);	
+		fprintf(stderr,"parsed name:%s class:%s type:%s value:%s\n", name,class,type, value);	
 #endif
 	}
 

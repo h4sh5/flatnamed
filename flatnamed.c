@@ -21,6 +21,7 @@ struct name_hash_record {
     uint32_t key_type_hash; // this is a hash of name + "-" + type
     // uint16_t type; // probably dont need this
     char class[2]; // i mean do i really need to store this..?
+    char *value;
     UT_hash_handle hh;         /* makes this structure hashable */
 };
 
@@ -41,14 +42,15 @@ uint32_t jenkins_one_at_a_time_hash(const uint8_t* key, size_t length) {
   return hash;
 }
 
-void add_name(char* name, char* type, char* class) {
+void add_name(char* name, char* type, char* class, char* value) {
     struct name_hash_record *r;
 
-    r = malloc(sizeof r);
+    r = malloc(sizeof *r);
     unsigned char name_dash_type[strlen(name)+1+strlen(type)+1];
     sprintf(name_dash_type, "%s-%s", name, type);
     r->key_type_hash = jenkins_one_at_a_time_hash(name_dash_type, sizeof name_dash_type);
     r->class[0] = class[0]; r->class[1] = class[1];
+    r->value = value;
     HASH_ADD_INT(records, key_type_hash, r);  /* id: name of key field */
 }
 
@@ -268,8 +270,7 @@ char* get_nth_whitespace_quoted_token(char *s, size_t slen, int nth) {
 		token[strlen(token)-2] = 0;
 	}
 
-
-	token[end-prev_end-1] = 0; // NULL term, and get rid of new line
+	token[end-prev_end] = 0; // NULL term, and get rid of new line
 
 
 	
@@ -299,13 +300,18 @@ void parse_zone_file(char* filename) {
 		char line[RECORD_LINE_MAX] = {0,};
 		fgets(line, RECORD_LINE_MAX, fp);
 		// get tokens (quoted = double quotes only)
-		char* name = get_nth_whitespace_quoted_token(line, strlen(line), 1);
-		char* class = get_nth_whitespace_quoted_token(line, strlen(line), 2);
-		char* type = get_nth_whitespace_quoted_token(line, strlen(line), 3);
-		char* value = get_nth_whitespace_quoted_token(line, strlen(line), 4);
+		char* name = get_nth_whitespace_quoted_token(line, strlen(line)-1, 1); // strlen - 1 to get rid of \n
+		char* class = get_nth_whitespace_quoted_token(line, strlen(line)-1, 2);
+		char* type = get_nth_whitespace_quoted_token(line, strlen(line)-1, 3);
+		char* value = get_nth_whitespace_quoted_token(line, strlen(line)-1, 4);
 #ifdef DEBUG
 
-		fprintf(stderr,"parsed name:%s class:%s type:%s value:%s\n", name,class,type, value);	
+		fprintf(stderr,"parsed name:%s class:%s type:%s value:%s\n", name,class,type, value);
+		// char name_type[strlen(name)+strlen(type) +2];
+		// sprintf(name_type, "%s-%s", name, type);
+		// name_type[strlen(name)+strlen(type) +2 - 1] = 0; //NULL term
+		// fprintf(stderr, "key:%s\n", name_type);
+		add_name(name, type, class,value);
 #endif
 	}
 

@@ -14,8 +14,48 @@
 
 #include "qtypes.h"
 
+// ut hash for hashmaps
+#include "uthash.h"
+
+struct name_hash_record {
+    uint32_t key_type_hash; // this is a hash of name + "-" + type
+    // uint16_t type; // probably dont need this
+    char class[2]; // i mean do i really need to store this..?
+    UT_hash_handle hh;         /* makes this structure hashable */
+};
+
+struct name_hash_record *records =  NULL;
+
+
+uint32_t jenkins_one_at_a_time_hash(const uint8_t* key, size_t length) {
+  size_t i = 0;
+  uint32_t hash = 0;
+  while (i != length) {
+    hash += key[i++];
+    hash += hash << 10;
+    hash ^= hash >> 6;
+  }
+  hash += hash << 3;
+  hash ^= hash >> 11;
+  hash += hash << 15;
+  return hash;
+}
+
+void add_name(char* name, char* type, char* class) {
+    struct name_hash_record *r;
+
+    r = malloc(sizeof r);
+    unsigned char name_dash_type[strlen(name)+1+strlen(type)+1];
+    sprintf(name_dash_type, "%s-%s", name, type);
+    r->key_type_hash = jenkins_one_at_a_time_hash(name_dash_type, sizeof name_dash_type);
+    r->class[0] = class[0]; r->class[1] = class[1];
+    HASH_ADD_INT(records, key_type_hash, r);  /* id: name of key field */
+}
+
 // 512 is usually enough; but why not more?
 #define QMAX 10240
+// max line size in zone record file
+#define RECORD_LINE_MAX QMAX * 2
 
 //packed, to make sure the size is consistent and no extra padding is applied
 typedef struct {
@@ -171,7 +211,85 @@ void process_query(unsigned char *pkt, size_t plen, struct sockaddr* sa, socklen
 
 
 }
- 
+
+// 1 indexed
+char* get_nth_whitespace_quoted_token(char *s, size_t slen, int nth) {
+	int n = 0;
+	// TODO handle quotes
+	int in_quote = 0; 
+	int prev_whitespace = 0;
+
+	// scan past consecutive separators
+	size_t end, prev_end;
+	prev_end = 0;
+	for (end = 0; end < slen; ++end) {
+		if ((s[end] == ' ' || s[end] == '\t' || s[end] == '\r')) { //whitespace
+
+			if (!prev_whitespace) {
+				n++;
+				if (n == nth - 1) {
+					prev_end = end + 1; // skip past the space
+				}
+			}
+			prev_whitespace = 1;
+
+		} else {
+			// hit a non-whitespace token
+			prev_whitespace = 0;
+			
+		}
+		
+		if (n == nth) { // scan til the token *after?
+			break;
+		}
+	}
+	// end would be the end of the token, prev_end would be the end of the prev token which is the start
+// #ifdef DEBUG
+// 	fprintf(stderr, "length of token:%d\n", end - prev_end);
+// #endif
+	char *token = malloc(end-prev_end+1);
+
+	strncpy(token, s+prev_end, end-prev_end);
+	token[end-prev_end] = 0; // NULL term
+	
+// #ifdef DEBUG
+// 	fprintf(stderr, "token in func:%s\n", token);
+// #endif
+
+	return token;
+
+}
+
+/**
+ * parse zone file and add all zones into records
+ * each line of the file is these values separated by space:
+ * name class type value
+ * e.g.
+ * example.com IN A 1.2.3.4
+ * version.bind CH TXT 6.9
+ */
+void parse_zone_file(char* filename) {
+	FILE *fp = fopen(filename, "r");
+	if (!fp) {
+		perror(filename);
+	}
+
+	while (!feof(fp)) {
+		char line[RECORD_LINE_MAX] = {0,};
+		fgets(line, RECORD_LINE_MAX, fp);
+		// get tokens
+		char* name = get_nth_whitespace_quoted_token(line, strlen(line), 1);
+		char* class = get_nth_whitespace_quoted_token(line, strlen(line), 2);
+		char* type = get_nth_whitespace_quoted_token(line, strlen(line), 3);
+#ifdef DEBUG
+
+		fprintf(stderr,"parsed name:%s class:%s type:%s\n", name,class,type);	
+#endif
+	}
+
+
+}
+
 int main(int argc, char **argv) {
 	
 	int port = 53; // TODO take arg, argparse etc.
@@ -179,17 +297,31 @@ int main(int argc, char **argv) {
 	// arg parsing
 	int ch;
 	int debug_count  = 0;
-	while ((ch = getopt(argc, argv, "p:D:")) != -1) {
+	char* zonefile = "flatzone.txt";
+	// zonefile; = "flatzone.txt";
+	while ((ch = getopt(argc, argv, "f:p:D:")) != -1) {
 		if (ch == 'p') {
 			port = atoi(optarg);
-		} else if (ch == 'D') {
+		} 
+		if (ch == 'D') {
 			debug_count = atoi(optarg);
 			fprintf(stderr, "debug_count: %d\n", debug_count);
-		} else if (ch == ':') {
+		} 
+		if (ch == 'f') {
+			// fprintf(stderr,"option -f\n");
+			if (optarg) {
+				zonefile = optarg;
+			}
+		} 
+		if (ch == ':') {
 			// missing argument
 			return -1;
 		}
 	}
+
+	fprintf(stderr, "using zone file %s\n", zonefile);
+
+	parse_zone_file(zonefile);
 
 	struct sockaddr_in udp_sockaddr;
 	memset(&udp_sockaddr, 0, sizeof(udp_sockaddr));

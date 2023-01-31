@@ -217,12 +217,12 @@ int main(int argc, char **argv) {
 #endif
 	while (1) { // i guess udp doesn't need multi threads
 		struct sockaddr from;
-		memset(&from, 0, sizeof(from));   
+		memset(&from, 0, sizeof(from));
 		socklen_t fromLen = sizeof(struct sockaddr);
-		unsigned char buf[QMAX];
+		unsigned char buf[QMAX] = {0,};
 		ssize_t rlen = recvfrom(s, buf, QMAX, 0, &from, &fromLen);
 #ifdef DEBUG
-		msginfo((struct sockaddr_storage *) &from, fromLen, rlen);
+		// msginfo((struct sockaddr_storage *) &from, fromLen, rlen);
 		// hexdump(buf, rlen);
 #endif
 		// if (!fork()) { //child?

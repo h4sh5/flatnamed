@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <sys/socket.h>
 #include <netdb.h>
+#include <netinet/in.h>
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <sys/types.h>
@@ -105,11 +106,32 @@ void msginfo(const struct sockaddr_storage *ss, socklen_t sslen, size_t len) {
 	hbuf, sizeof(hbuf), sbuf, sizeof(sbuf),
 	NI_NUMERICHOST | NI_NUMERICSERV);
     if (error != 0) {
-	warnx("msginfo: %s", gai_strerror(error));
-	return;
+		warnx("msginfo: %s", gai_strerror(error));
+		return;
     }
 
     fprintf(stderr, "host %s port %s bytes %zu\n", hbuf, sbuf, len);
+}
+
+/**
+ * convert ipv4 string to 32 bit int
+ **/
+uint32_t ipv4_str_to_int(char *ip) {
+	struct addrinfo *res;// getaddrinfo returns an array
+	int error;
+	if (error = getaddrinfo(ip, 0, NULL, &res) != 0) {
+		warnx("getaddrinfo: %s", gai_strerror(error));
+		freeaddrinfo(res);
+		return 0;
+	}
+	uint32_t ip_int = ((struct sockaddr_in*) (res[0].ai_addr))->sin_addr.s_addr;
+#ifdef DEBUG
+	fprintf(stderr, "converted ipv4 addr to int: %08x %d\n", ip_int,ip_int);
+#endif
+	freeaddrinfo(res);
+
+	return ip_int;
+
 }
 
 // parse and answer query
@@ -204,7 +226,9 @@ void process_query(unsigned char *pkt, size_t plen, struct sockaddr* sa, socklen
 		uint32_t khash = jenkins_one_at_a_time_hash(key, sizeof(key));
 		HASH_FIND_INT(records, &khash,r);
 		if (r) {
-			fprintf(stderr, "found value:%s\n", r->value);
+			uint32_t ip_int = ipv4_str_to_int(r->value);
+			fprintf(stderr, "found value:%s ip:%08x\n", r->value, ip_int);
+			memcpy(data, &ip_int, sizeof(ip_int));
 		}
 	} else { // refuse - record not supported
 		rrh.dlen = 0;

@@ -134,6 +134,46 @@ uint32_t ipv4_str_to_int(char *ip) {
 
 }
 
+/**
+ * convert string to dns record labels
+ * e.g. example.com to the length-value array 
+ * 0765 7861 6d70 6c65 0363 6f6d            .example.com
+ * ab.example.com to
+ * 00000000: 0261 6207 6578 616d 706c 6503 636f 6d    .ab.example.com
+ **/
+unsigned char* name_str_to_labels(char* name, size_t nlen) {
+	// the size of the output is the lenght of name + 1 (since number appended at the front)
+	unsigned char* res = malloc(nlen+1);
+	uint8_t curr_label_len = 0;
+	unsigned int nth_label = 0;
+	unsigned int prev_label_len = 0;
+	char curr_label[64] = {0,}; // max per label in DNS is 64
+	for (size_t i = 0; i < nlen; ++i) {
+		char c = name[i];
+		if (c == '.') { // hit a separator. store current label length and the label string
+			
+			res[i - curr_label_len] = curr_label_len;
+			strncpy(res + (i - curr_label_len) + 1, curr_label, curr_label_len);
+			prev_label_len = curr_label_len;
+#ifdef DEBUG
+			fprintf(stderr, "label len: %d label:%s\n", curr_label_len, curr_label);
+#endif
+			curr_label_len = 0;
+			nth_label++;
+			memset(curr_label, 0, 64); // clear the current label
+
+		} else {
+			curr_label[curr_label_len] = c;
+			curr_label_len += 1;
+		}
+	}
+#ifdef DEBUG
+	hexdump(res, nlen+1);
+#endif
+	return res;
+
+}
+
 // parse and answer query
 void process_query(unsigned char *pkt, size_t plen, struct sockaddr* sa, socklen_t sa_len,  int socket) {
 	DNSHeader qh = {0,};
@@ -253,14 +293,33 @@ void process_query(unsigned char *pkt, size_t plen, struct sockaddr* sa, socklen
 		if (r) {
 			if (r->value != NULL) {
 				fprintf(stderr, "[NS] found value:%s\n", r->value);
-				dsize = strlen(r->value);
+				dsize = strlen(r->value) + 1;
+				unsigned char *labels = name_str_to_labels(r->value, strlen(r->value));
 				rrh.dlen = htons(dsize);
 				data = malloc(dsize);
-				memcpy(data, r->value, strlen(r->value));
+				memcpy(data, labels, dsize);
 			} else {
 				fprintf(stderr, "[NS] ERROR: r->value is NULL\n");
 			}
 			
+		} else {
+			// reply with NXDOMAIN if not found
+			rrh.dlen = 0;
+			size_t qlen = plen - sizeof(qh); // packet length - the header size = size of question
+
+			unsigned char rpkt[sizeof(qh) + qlen];
+			memcpy(&ah, &qh, sizeof(qh));
+			ah.flags = htons(0x8003); // NXDOMAIN response 
+			memcpy(rpkt, 										(unsigned char*) &ah, sizeof(qh)); // copy in answer header
+			memcpy(rpkt + sizeof(ah), 							question, qlen); // copy in question
+	#ifdef DEBUG
+			fprintf(stderr, "sending NXDOMAIN, since NS record not found\n");
+	#endif
+			if (sendto(socket, rpkt, sizeof(rpkt), 0, sa, sa_len) == -1) {
+				warnx("sendto error: %s", strerror(errno));
+			}
+
+			return;
 		}
 
 	} else { // record not supported

@@ -121,7 +121,7 @@ uint32_t ipv4_str_to_int(char *ip) {
 	int error;
 	if (error = getaddrinfo(ip, 0, NULL, &res) != 0) {
 		warnx("getaddrinfo: %s", gai_strerror(error));
-		freeaddrinfo(res);
+		// DO NOT free res if getaddrinfo failed
 		return 0;
 	}
 	uint32_t ip_int = ((struct sockaddr_in*) (res[0].ai_addr))->sin_addr.s_addr;
@@ -210,11 +210,14 @@ void process_query(unsigned char *pkt, size_t plen, struct sockaddr* sa, socklen
 	rrh.class = htons(class);
 	rrh.ttl = htonl(300); // 300 seconds left?
 
-	unsigned char data[4] = {0x7f, 0x00, 0x00, 0x01}; // 127.0.0.1 + NULL NULL
+	unsigned char *data = NULL;
+	size_t dsize = 0; // size of data, default 0
 
 	// HANDLE A RECORD
 	if (type == type_A) {
-		rrh.dlen = htons(4); // an ipv4 address is 4 bytes long
+		dsize = 4;
+		// dlen is for the header, so it's ran through htons(). DO NOT USE IT AS SIZE COUNT
+		rrh.dlen = htons(dsize); // an ipv4 address is 4 bytes long (sizeof ip_int)
 		// do a lookup
 		struct name_hash_record *r;
 		char key[strlen(name) + 2 + 1];
@@ -227,49 +230,86 @@ void process_query(unsigned char *pkt, size_t plen, struct sockaddr* sa, socklen
 		HASH_FIND_INT(records, &khash,r);
 		if (r) {
 			uint32_t ip_int = ipv4_str_to_int(r->value);
-			fprintf(stderr, "found value:%s ip:%08x\n", r->value, ip_int);
+			fprintf(stderr, "[A] found value:%s ip:%08x\n", r->value, ip_int);
+			data = malloc(sizeof(ip_int));
+			memcpy(data, &ip_int, sizeof(ip_int));
+		} else {
+			//  recursive upstream query via getaddrinfo? what if it returns nothing (then 0.0.0.0?)
+			uint32_t ip_int = ipv4_str_to_int(name);
+			fprintf(stderr, "[A] recursively resolved %s ip:%08x\n", name, ip_int);
+			data = malloc(sizeof(ip_int));
 			memcpy(data, &ip_int, sizeof(ip_int));
 		}
-	} else { // refuse - record not supported
+	} else if (type == type_NS) {
+		// this doesn't have compression implemented for now
+		struct name_hash_record *r;
+		char key[strlen(name) + 3 + 1]; // "-NS" = 3 chars
+		sprintf(key, "%s-NS", name);
+#ifdef DEBUG
+		fprintf(stderr,"looking up key %s\n", key);
+#endif
+		uint32_t khash = jenkins_one_at_a_time_hash(key, sizeof(key));
+		HASH_FIND_INT(records, &khash,r);
+		if (r) {
+			if (r->value != NULL) {
+				fprintf(stderr, "[NS] found value:%s\n", r->value);
+				dsize = strlen(r->value);
+				rrh.dlen = htons(dsize);
+				data = malloc(dsize);
+				memcpy(data, r->value, strlen(r->value));
+			} else {
+				fprintf(stderr, "[NS] ERROR: r->value is NULL\n");
+			}
+			
+		}
+
+	} else { // record not supported
 		rrh.dlen = 0;
 		size_t qlen = plen - sizeof(qh); // packet length - the header size = size of question
 
 		unsigned char rpkt[sizeof(qh) + qlen];
 		// set answer header to the same as qh, then modify it
 		memcpy(&ah, &qh, sizeof(qh));
-		// set qh flag to refuse (reply code 5)
-		ah.flags = htons(0x8005); // REFUSE response 
+		// set qh flag to refuse (reply code 5) or SERVFAIL (code 2)
+		ah.flags = htons(0x8002); // SERVFAIL response 
 		memcpy(rpkt, 										(unsigned char*) &ah, sizeof(qh)); // copy in answer header
 		memcpy(rpkt + sizeof(ah), 							question, qlen); // copy in question
 #ifdef DEBUG
-		fprintf(stderr, "sending REFUSE\n");
+		fprintf(stderr, "sending SERVFAIL\n");
 #endif
 		if (sendto(socket, rpkt, sizeof(rpkt), 0, sa, sa_len) == -1) {
 			warnx("sendto error: %s", strerror(errno));
 		}
+
 		return;
 	}
 
-	// actual answer data
-	
-
-	
-
-	unsigned char rpkt[sizeof(ah) + qlen + sizeof(rrh) + sizeof(data)];
+	// data pre-filled per record type below
+	int rsize = sizeof(ah) + qlen + sizeof(rrh) + dsize;
+	unsigned char *rpkt = calloc(rsize, 1);
+	// unsigned char rpkt[rsize];
+	if (rpkt == NULL) {
+		warnx("[ERROR] rpkt malloc FAILED %s\n",  strerror(errno));
+		return;
+	}
+	memset(rpkt, 0, rsize);
 	memcpy(rpkt, 										(unsigned char*) &ah, sizeof(ah)); // copy in answer header
 	memcpy(rpkt + sizeof(ah), 							question, qlen); // copy in question
 	memcpy(rpkt + sizeof(ah) + qlen,				 	(unsigned char*) &rrh, sizeof(rrh)); // copy in resource record header
-	memcpy(rpkt + sizeof(ah) + qlen + sizeof(rrh),	 	data, sizeof(data)); // actual answer data
+	memcpy(rpkt + sizeof(ah) + qlen + sizeof(rrh),	 	data, dsize); // actual answer data
 #ifdef DEBUG
 	puts("------ answer ------");
 	// hexdump(rpkt, sizeof(rpkt));
 #endif
-	if (sendto(socket, rpkt, sizeof(rpkt), 0, sa, sa_len) == -1) {
+	if (sendto(socket, rpkt, rsize, 0, sa, sa_len) == -1) {
 		warnx("sendto error: %s", strerror(errno));
 	}
 
+	if (data) {
+		free(data);
+	}
 
-
+	free(rpkt);
 }
 
 // 1 indexed, and double quotes only
@@ -360,8 +400,8 @@ void parse_zone_file(char* filename) {
 		if (line[0]=='#') { //skip comments
 			continue;
 		}
-		if (strlen(line) <= 1) {
-			break;
+		if (strlen(line) <= 1) { //skip empty lines
+			continue;
 		}
 		// get tokens (quoted = double quotes only)
 		char* name = get_nth_whitespace_quoted_token(line, strlen(line)-1, 1); // strlen - 1 to get rid of \n

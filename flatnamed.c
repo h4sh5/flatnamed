@@ -481,6 +481,14 @@ void parse_zone_file(char* filename) {
 
 }
 
+void help() {
+	printf("-p port : port to bind to (default 53)\n\
+-f zonefile : path to zonefile (default flatzone.txt)\n\
+-D : enable debugging mode\n\
+");
+
+}
+
 int main(int argc, char **argv) {
 	
 	int port = 53; // TODO take arg, argparse etc.
@@ -490,7 +498,11 @@ int main(int argc, char **argv) {
 	int debug_count  = 0;
 	char* zonefile = "flatzone.txt";
 	// zonefile; = "flatzone.txt";
-	while ((ch = getopt(argc, argv, "f:p:D:")) != -1) {
+	while ((ch = getopt(argc, argv, "f:p:D:h")) != -1) {
+		if (ch == 'h') {
+			help();
+			exit(0);
+		} 
 		if (ch == 'p') {
 			port = atoi(optarg);
 		} 
@@ -519,7 +531,7 @@ int main(int argc, char **argv) {
 	
 
 	udp_sockaddr.sin_addr.s_addr = htonl(INADDR_ANY); //any incoming IP 
-    udp_sockaddr.sin_port = htons(53);
+    udp_sockaddr.sin_port = htons(port);
     // udp_sockaddr.sin_family = AF_INET; //address family
 
 	int s = socket(AF_INET , SOCK_DGRAM , IPPROTO_UDP);
